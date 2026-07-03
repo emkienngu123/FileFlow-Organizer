@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import {
   ArchiveRestore,
   ClipboardList,
@@ -48,6 +49,13 @@ type AppSettings = {
   recursive: boolean;
 };
 
+type ScanProgress = {
+  phase: string;
+  processed: number;
+  total: number;
+  current: string;
+};
+
 type View = "organize" | "rules" | "history" | "settings";
 
 const templates = ["Category", "Extension", "Date Created", "Date Modified", "Category / Extension", "Filename Prefix"];
@@ -67,6 +75,7 @@ function App() {
   const [history, setHistory] = useState<HistorySummary[]>([]);
   const [filter, setFilter] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("All");
+  const [scanProgress, setScanProgress] = useState<ScanProgress | null>(null);
   const [status, setStatus] = useState("Ready to organize.");
   const [busy, setBusy] = useState(false);
 
@@ -79,6 +88,18 @@ function App() {
         setRecursive(settings.recursive);
       })
       .catch((error) => setStatus(String(error)));
+  }, []);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    listen<ScanProgress>("scan_progress", (event) => {
+      setScanProgress(event.payload);
+    }).then((handler) => {
+      unlisten = handler;
+    });
+    return () => {
+      unlisten?.();
+    };
   }, []);
 
   const filteredPlan = useMemo(() => {
@@ -145,11 +166,13 @@ function App() {
 
   async function previewFor(nextSource: string, nextDestination: string) {
     await runBusy("Scanning selected folder...", async () => {
+      setScanProgress({ phase: "Starting scan", processed: 0, total: 0, current: nextSource });
       const nextPlan = await invoke<FilePlan[]>("build_plan", {
         request: { source: nextSource, destination: nextDestination, recursive, template, rules },
       });
       setPlan(nextPlan);
       setCategoryFilter("All");
+      setScanProgress({ phase: "Preview complete", processed: nextPlan.length, total: nextPlan.length, current: nextSource });
       setStatus(`Preview ready: ${nextPlan.length.toLocaleString()} files planned.`);
     });
   }
@@ -350,6 +373,8 @@ function App() {
                 </button>
               </div>
 
+              <ScanProgressBar progress={scanProgress} active={busy} />
+
               <ArrangementPanel arrangement={arrangement} hasDestination={Boolean(destination.trim())} />
             </div>
 
@@ -389,6 +414,8 @@ function App() {
                 Add rule
               </button>
             </div>
+
+            <RuleHelp />
 
             <div className="rule-list">
               {rules.map((rule, index) => (
@@ -435,7 +462,7 @@ function App() {
               </button>
             </div>
             <div className="settings-grid">
-              <Metric label="App version" value="0.1.0" />
+              <Metric label="App version" value="0.2.0" />
               <Metric label="Installer target" value="MSI + EXE" />
               <Metric label="Saved rules" value={rules.length.toLocaleString()} />
             </div>
@@ -487,6 +514,62 @@ function PathField({
         )}
       </div>
     </label>
+  );
+}
+
+function ScanProgressBar({ progress, active }: { progress: ScanProgress | null; active: boolean }) {
+  if (!progress && !active) {
+    return null;
+  }
+  const percent = progress?.total ? Math.min(100, Math.round((progress.processed / progress.total) * 100)) : 0;
+  const label = progress?.total
+    ? `${progress.processed.toLocaleString()} of ${progress.total.toLocaleString()} files`
+    : `${progress?.processed.toLocaleString() ?? 0} files found`;
+
+  return (
+    <div className="scan-progress">
+      <div className="scan-progress-head">
+        <strong>{progress?.phase ?? "Scanning"}</strong>
+        <span>{progress?.total ? `${percent}%` : "Counting..."}</span>
+      </div>
+      <div className={`progress-track ${progress?.total ? "" : "indeterminate"}`}>
+        <div className="progress-fill" style={{ width: progress?.total ? `${percent}%` : "45%" }} />
+      </div>
+      <div className="scan-progress-foot">
+        <span>{label}</span>
+        <span title={progress?.current}>{progress?.current ? compactPath(progress.current) : ""}</span>
+      </div>
+    </div>
+  );
+}
+
+function RuleHelp() {
+  const examples = [
+    { match: ".pdf", folder: "PDF Documents", description: "Sends every PDF file to one folder." },
+    { match: "invoice", folder: "Invoices", description: "Matches filenames like invoice-2026.xlsx or client-invoice.pdf." },
+    { match: ".jpg", folder: "Photos", description: "Moves JPEG photos before the default category template runs." },
+  ];
+
+  return (
+    <div className="rule-help">
+      <div>
+        <h4>How custom rules work</h4>
+        <p>
+          Rules run before the selected template. Use an extension such as <strong>.pdf</strong> or a word that appears in
+          the filename such as <strong>invoice</strong>. Matching files go to the folder name you choose.
+        </p>
+      </div>
+      <div className="rule-examples">
+        {examples.map((example) => (
+          <div key={`${example.match}-${example.folder}`}>
+            <code>{example.match}</code>
+            <span>{"->"}</span>
+            <strong>{example.folder}</strong>
+            <p>{example.description}</p>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 

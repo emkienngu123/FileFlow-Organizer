@@ -51,8 +51,8 @@ src-tauri\target\release\bundle\
 
 Current local build outputs:
 
-- `src-tauri\target\release\bundle\msi\FileFlow Organizer_0.1.0_x64_en-US.msi`
-- `src-tauri\target\release\bundle\nsis\FileFlow Organizer_0.1.0_x64-setup.exe`
+- `src-tauri\target\release\bundle\msi\FileFlow Organizer_0.2.0_x64_en-US.msi`
+- `src-tauri\target\release\bundle\nsis\FileFlow Organizer_0.2.0_x64-setup.exe`
 
 ## Distribution Notes
 

@@ -8,6 +8,7 @@ use std::{
     process::Command,
     time::SystemTime,
 };
+use tauri::Emitter;
 use walkdir::WalkDir;
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -79,6 +80,14 @@ struct AppSettings {
     recursive: bool,
 }
 
+#[derive(Debug, Serialize, Clone)]
+struct ScanProgress {
+    phase: String,
+    processed: usize,
+    total: usize,
+    current: String,
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
@@ -121,11 +130,14 @@ fn save_settings(settings: AppSettings) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn build_plan(request: BuildPlanRequest) -> Result<Vec<FilePlan>, String> {
+fn build_plan(app: tauri::AppHandle, request: BuildPlanRequest) -> Result<Vec<FilePlan>, String> {
     let source = normalize_dir(&request.source, "source")?;
     let destination = normalize_destination(&request.destination)?;
     let mut plan = Vec::new();
     let mut used_targets = HashSet::new();
+    emit_scan_progress(&app, "Counting files", 0, 0, &source);
+    let total = count_eligible_files(&source, &destination, request.recursive, &app)?;
+    emit_scan_progress(&app, "Building preview", 0, total, &source);
 
     let walker = if request.recursive {
         WalkDir::new(&source).into_iter()
@@ -133,6 +145,7 @@ fn build_plan(request: BuildPlanRequest) -> Result<Vec<FilePlan>, String> {
         WalkDir::new(&source).max_depth(1).into_iter()
     };
 
+    let mut processed = 0;
     for entry in walker.filter_map(Result::ok).filter(|entry| entry.file_type().is_file()) {
         let path = entry.path();
         if is_inside(path, &destination) {
@@ -148,8 +161,13 @@ fn build_plan(request: BuildPlanRequest) -> Result<Vec<FilePlan>, String> {
             reason,
             size: metadata.len(),
         });
+        processed += 1;
+        if processed == total || processed % 100 == 0 {
+            emit_scan_progress(&app, "Building preview", processed, total, path);
+        }
     }
 
+    emit_scan_progress(&app, "Preview complete", processed, total, &source);
     Ok(plan)
 }
 
@@ -355,6 +373,40 @@ fn category_map() -> HashMap<&'static str, &'static [&'static str]> {
         ("Code", &["py", "js", "ts", "html", "css", "json", "xml", "cs", "cpp", "c", "java"][..]),
         ("Apps", &["exe", "msi", "appx", "msix", "bat", "cmd"][..]),
     ])
+}
+
+fn count_eligible_files(source: &Path, destination: &Path, recursive: bool, app: &tauri::AppHandle) -> Result<usize, String> {
+    let walker = if recursive {
+        WalkDir::new(source).into_iter()
+    } else {
+        WalkDir::new(source).max_depth(1).into_iter()
+    };
+
+    let mut total = 0;
+    let mut visited = 0;
+    for entry in walker.filter_map(Result::ok) {
+        visited += 1;
+        let path = entry.path();
+        if entry.file_type().is_file() && !is_inside(path, destination) {
+            total += 1;
+        }
+        if visited % 250 == 0 {
+            emit_scan_progress(app, "Counting files", total, 0, path);
+        }
+    }
+    Ok(total)
+}
+
+fn emit_scan_progress(app: &tauri::AppHandle, phase: &str, processed: usize, total: usize, current: &Path) {
+    let _ = app.emit(
+        "scan_progress",
+        ScanProgress {
+            phase: phase.to_string(),
+            processed,
+            total,
+            current: current.to_string_lossy().to_string(),
+        },
+    );
 }
 
 fn target_folder_for(
